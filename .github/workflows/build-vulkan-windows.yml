@@ -1,0 +1,43 @@
+name: Build Windows Vulkan
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-vulkan:
+    runs-on: windows-latest
+    steps:
+      - name: Clone
+        uses: actions/checkout@v4
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          curl -L -o VulkanSDK-Installer.exe https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe
+          .\VulkanSDK-Installer.exe --accept-licenses --default-answer --confirm-command install
+          $sdkPath = (Get-ChildItem "C:\VulkanSDK" -Directory | Sort-Object Name -Descending | Select-Object -First 1).FullName
+          echo "VULKAN_SDK=$sdkPath" >> $env:GITHUB_ENV
+          echo "$sdkPath\Bin" >> $env:GITHUB_PATH
+
+      - name: Configure CMake with Vulkan
+        run: >
+          cmake -S . -B build -A x64
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_SHARED_LIBS=ON
+          -DGGML_VULKAN=ON
+
+      - name: Build
+        run: cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifact -Force
+          Copy-Item build/bin/Release/*.exe artifact/
+          Copy-Item build/bin/Release/*.dll artifact/
+
+      - name: Upload Vulkan binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-vulkan-bin-x64
+          path: artifact/
