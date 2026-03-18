@@ -2,13 +2,54 @@ name: Build Windows Vulkan
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday 6:00 UTC
 
 jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.compare.outputs.should_build }}
+      upstream_tag: ${{ steps.compare.outputs.upstream_tag }}
+    steps:
+      - name: Get upstream latest release tag
+        id: upstream
+        run: |
+          TAG=$(curl -s https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest | jq -r '.tag_name')
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Get last built release tag
+        id: last_built
+        run: |
+          TAG=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/${{ github.repository }}/releases/latest \
+            | jq -r '.tag_name // "none"')
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Compare versions
+        id: compare
+        run: |
+          UPSTREAM="${{ steps.upstream.outputs.tag }}"
+          LAST_BUILT="${{ steps.last_built.outputs.tag }}"
+          echo "Upstream: $UPSTREAM"
+          echo "Last built: $LAST_BUILT"
+          if [ "$UPSTREAM" = "$LAST_BUILT" ] && [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
+          echo "upstream_tag=$UPSTREAM" >> $GITHUB_OUTPUT
+
   windows-vulkan:
+    needs: check-upstream
+    if: needs.check-upstream.outputs.should_build == 'true'
     runs-on: windows-latest
     steps:
-      - name: Clone
+      - name: Clone upstream tag
         uses: actions/checkout@v4
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: ${{ needs.check-upstream.outputs.upstream_tag }}
 
       - name: Install Vulkan SDK
         shell: pwsh
@@ -36,8 +77,19 @@ jobs:
           Copy-Item build/bin/Release/*.exe artifact/
           Copy-Item build/bin/Release/*.dll artifact/
 
-      - name: Upload Vulkan binaries
-        uses: actions/upload-artifact@v4
+      - name: Create zip
+        shell: pwsh
+        run: Compress-Archive -Path artifact/* -DestinationPath whisper-vulkan-bin-x64.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: whisper-vulkan-bin-x64
-          path: artifact/
+          tag_name: ${{ needs.check-upstream.outputs.upstream_tag }}
+          name: "${{ needs.check-upstream.outputs.upstream_tag }} Windows Vulkan"
+          body: |
+            Windows x64 Vulkan build of whisper.cpp ${{ needs.check-upstream.outputs.upstream_tag }}.
+
+            Built with `-DGGML_VULKAN=ON` from upstream [ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp).
+            Includes `whisper-server.exe` with Intel Arc and AMD GPU support via Vulkan backend.
+          files: whisper-vulkan-bin-x64.zip
+          token: ${{ secrets.GITHUB_TOKEN }}
